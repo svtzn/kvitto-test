@@ -1,8 +1,11 @@
-from sqlalchemy import select
+import uuid
+from collections.abc import Sequence
+
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Payment, PaymentMethod, Tariff
+from app.models import Payment, PaymentMethod, PaymentStatus, Tariff
 from app.promo import get_discount_percent
 from app.schemas.payment import PaymentCreate
 from app.services.pricing import build_schedule, calc_discount
@@ -73,3 +76,18 @@ async def create_payment(
                 return existing, False
         raise
     return payment, True
+
+
+async def get_payment(session: AsyncSession, payment_id: uuid.UUID) -> Payment | None:
+    return await session.get(Payment, payment_id)
+
+
+async def list_payments(
+    session: AsyncSession, email: str | None = None, status: PaymentStatus | None = None
+) -> Sequence[Payment]:
+    stmt = select(Payment).order_by(Payment.created_at.desc(), Payment.id.desc())
+    if email is not None:
+        stmt = stmt.where(func.lower(Payment.email) == email.lower())
+    if status is not None:
+        stmt = stmt.where(Payment.status == status)
+    return (await session.scalars(stmt)).all()
