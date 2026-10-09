@@ -1,0 +1,75 @@
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.models import Payment, PaymentMethod, Tariff
+from app.promo import get_discount_percent
+from app.schemas.payment import PaymentCreate
+from app.services.pricing import build_schedule, calc_discount
+
+
+class UnknownTariff(Exception):
+    def __init__(self, tariff_id: str) -> None:
+        super().__init__(f"Unknown tariff: {tariff_id!r}")
+        self.tariff_id = tariff_id
+
+
+async def get_by_idempotency_key(session: AsyncSession, key: str) -> Payment | None:
+    return await session.scalar(select(Payment).where(Payment.idempotency_key == key))
+
+
+async def create_payment(
+    session: AsyncSession, data: PaymentCreate, idempotency_key: str | None
+) -> tuple[Payment, bool]:
+    """Создаёт платёж. Возвращает (платёж, создан ли он этим вызовом).
+
+    Raises:
+        UnknownTariff, UnknownPromoCode
+    """
+    if idempotency_key is not None:
+        existing = await get_by_idempotency_key(session, idempotency_key)
+        if existing is not None:
+            return existing, False
+
+    tariff = await session.get(Tariff, data.tariff_id)
+    if tariff is None:
+        raise UnknownTariff(data.tariff_id)
+
+    promo_code = None
+    discount = 0
+    if data.promo_code is not None:
+        percent = get_discount_percent(data.promo_code)
+        promo_code = data.promo_code.strip().upper()
+        discount = calc_discount(tariff.price, percent)
+    amount = tariff.price - discount
+
+    months = None
+    schedule = None
+    if data.method is PaymentMethod.INSTALLMENT:
+        assert data.installment_months is not None  # гарантирует PaymentCreate
+        months = int(data.installment_months)
+        schedule = build_schedule(amount, months)
+
+    payment = Payment(
+        tariff_id=tariff.id,
+        amount=amount,
+        discount=discount,
+        method=data.method,
+        installment_months=months,
+        schedule=schedule,
+        email=data.email,
+        promo_code=promo_code,
+        idempotency_key=idempotency_key,
+    )
+    session.add(payment)
+    try:
+        await session.commit()
+    except IntegrityError:
+        # гонка: параллельный запрос с тем же ключом успел закоммитить раньше
+        await session.rollback()
+        if idempotency_key is not None:
+            existing = await get_by_idempotency_key(session, idempotency_key)
+            if existing is not None:
+                return existing, False
+        raise
+    return payment, True

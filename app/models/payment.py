@@ -47,6 +47,8 @@ class Payment(Base):
             name="installment_consistency",
         ),
     )
+    # created_at (server_default) приходит через RETURNING сразу при flush
+    __mapper_args__ = {"eager_defaults": True}  # noqa: RUF012
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     status: Mapped[PaymentStatus] = mapped_column(
