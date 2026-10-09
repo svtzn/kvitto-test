@@ -148,6 +148,18 @@ async def mixed_payments(db_session: AsyncSession) -> dict[str, Payment]:
         pytest.param(
             {"email": ""}, ["b_failed", "b_pending", "a_succeeded", "a_pending"], id="email-empty"
         ),
+        pytest.param(
+            {"email": "  "}, ["b_failed", "b_pending", "a_succeeded", "a_pending"], id="email-blank"
+        ),
+        pytest.param(
+            {"status": ""}, ["b_failed", "b_pending", "a_succeeded", "a_pending"], id="status-empty"
+        ),
+        pytest.param(
+            {"status": "  "},
+            ["b_failed", "b_pending", "a_succeeded", "a_pending"],
+            id="status-blank",
+        ),
+        pytest.param({"email": "", "status": "failed"}, ["b_failed"], id="email-empty-and-status"),
         pytest.param({"status": "pending"}, ["b_pending", "a_pending"], id="status"),
         pytest.param({"status": "refunded"}, [], id="status-no-match"),
         pytest.param(
@@ -168,7 +180,7 @@ async def test_list_filters(
     assert ids(response.json()) == [str(mixed_payments[name].id) for name in expected]
 
 
-@pytest.mark.parametrize("bad_status", ["unknown", "PENDING", ""])
+@pytest.mark.parametrize("bad_status", ["unknown", "PENDING"])
 async def test_list_unknown_status(client: AsyncClient, bad_status: str) -> None:
     response = await client.get("/payments", params={"status": bad_status})
 
