@@ -9,6 +9,7 @@ from app.models import Payment, PaymentMethod, PaymentStatus, Tariff
 from app.promo import get_discount_percent
 from app.schemas.payment import PaymentCreate
 from app.services.pricing import build_schedule, calc_discount
+from app.services.transitions import can_transition
 
 
 class UnknownTariff(Exception):
@@ -91,3 +92,40 @@ async def list_payments(
     if status is not None:
         stmt = stmt.where(Payment.status == status)
     return (await session.scalars(stmt)).all()
+
+
+class PaymentNotFound(Exception):
+    def __init__(self, payment_id: uuid.UUID) -> None:
+        super().__init__(f"Payment not found: {payment_id}")
+        self.payment_id = payment_id
+
+
+class InvalidTransition(Exception):
+    def __init__(self, current: PaymentStatus, new: PaymentStatus) -> None:
+        super().__init__(f"Invalid transition: {current} -> {new}")
+        self.current = current
+        self.new = new
+
+
+async def change_status(
+    session: AsyncSession, payment_id: uuid.UUID, new_status: PaymentStatus
+) -> Payment:
+    """Атомарно меняет статус платежа.
+
+    Строка блокируется через SELECT … FOR UPDATE до конца транзакции, поэтому
+    параллельные вебхуки проверяют переход по уже зафиксированному статусу.
+
+    Raises:
+        PaymentNotFound, InvalidTransition
+    """
+    payment = await session.get(Payment, payment_id, with_for_update=True, populate_existing=True)
+    if payment is None:
+        await session.rollback()
+        raise PaymentNotFound(payment_id)
+    current = payment.status  # после rollback атрибуты объекта истекают
+    if not can_transition(current, new_status):
+        await session.rollback()
+        raise InvalidTransition(current, new_status)
+    payment.status = new_status
+    await session.commit()
+    return payment
