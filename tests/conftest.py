@@ -40,7 +40,7 @@ def session_factory(engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:
     return async_sessionmaker(engine, expire_on_commit=False)
 
 
-@pytest.fixture(autouse=True)
+@pytest.fixture
 async def clean_db(engine: AsyncEngine, session_factory: async_sessionmaker[AsyncSession]) -> None:
     async with engine.begin() as conn:
         await conn.execute(text("TRUNCATE payments, tariffs"))
@@ -50,7 +50,7 @@ async def clean_db(engine: AsyncEngine, session_factory: async_sessionmaker[Asyn
 
 @pytest.fixture
 async def db_session(
-    session_factory: async_sessionmaker[AsyncSession],
+    session_factory: async_sessionmaker[AsyncSession], clean_db: None
 ) -> AsyncIterator[AsyncSession]:
     """Отдельная сессия для проверки состояния БД из тестов."""
     async with session_factory() as session:
@@ -58,7 +58,9 @@ async def db_session(
 
 
 @pytest.fixture
-async def client(session_factory: async_sessionmaker[AsyncSession]) -> AsyncIterator[AsyncClient]:
+async def client(
+    session_factory: async_sessionmaker[AsyncSession], clean_db: None
+) -> AsyncIterator[AsyncClient]:
     # ASGITransport не запускает lifespan: seed делает clean_db, основная БД не трогается
     async def override_get_session() -> AsyncIterator[AsyncSession]:
         async with session_factory() as session:
