@@ -7,7 +7,7 @@ from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Payment, PaymentStatus
-from tests.factories import T0, add_payment
+from tests.helpers import T0, add_payment
 
 
 def ids(response_json: list[dict[str, Any]]) -> list[str]:

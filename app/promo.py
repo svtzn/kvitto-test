@@ -7,8 +7,12 @@ class UnknownPromoCode(Exception):
         self.code = code
 
 
+def normalize_promo_code(code: str) -> str:
+    return code.strip().upper()
+
+
 def get_discount_percent(code: str) -> int:
     try:
-        return PROMO_CODES[code.strip().upper()]
+        return PROMO_CODES[normalize_promo_code(code)]
     except KeyError:
         raise UnknownPromoCode(code) from None

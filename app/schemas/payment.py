@@ -1,17 +1,11 @@
 import uuid
 from datetime import UTC, datetime
-from typing import Self
+from typing import Annotated, Self
 
-from pydantic import (
-    BaseModel,
-    ConfigDict,
-    EmailStr,
-    field_serializer,
-    field_validator,
-    model_validator,
-)
+from pydantic import BaseModel, ConfigDict, EmailStr, field_serializer, model_validator
 
 from app.models import InstallmentMonths, PaymentMethod, PaymentStatus
+from app.schemas.common import BlankToNone
 
 
 class PaymentCreate(BaseModel):
@@ -19,14 +13,7 @@ class PaymentCreate(BaseModel):
     email: EmailStr
     method: PaymentMethod
     installment_months: InstallmentMonths | None = None
-    promo_code: str | None = None
-
-    @field_validator("promo_code")
-    @classmethod
-    def empty_promo_is_none(cls, value: str | None) -> str | None:
-        if value is None or not value.strip():
-            return None
-        return value
+    promo_code: Annotated[str | None, BlankToNone] = None
 
     @model_validator(mode="after")
     def check_installment_months(self) -> Self:

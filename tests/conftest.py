@@ -2,7 +2,7 @@ from collections.abc import AsyncIterator
 
 import pytest
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import text
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -14,12 +14,18 @@ from app.config import settings
 from app.db import get_session
 from app.main import app
 from app.models import Base
-from app.seed import seed_tariffs
+from tests.helpers import reset_db
+
+
+class TestEnv(BaseSettings):
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+    test_database_url: str | None = None
 
 
 @pytest.fixture(scope="session")
 async def engine() -> AsyncIterator[AsyncEngine]:
-    url = settings.test_database_url
+    url = TestEnv().test_database_url
     if not url:
         pytest.exit("TEST_DATABASE_URL не задан (см. .env.example)", returncode=1)
     if url == settings.database_url:
@@ -42,10 +48,7 @@ def session_factory(engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:
 
 @pytest.fixture
 async def clean_db(engine: AsyncEngine, session_factory: async_sessionmaker[AsyncSession]) -> None:
-    async with engine.begin() as conn:
-        await conn.execute(text("TRUNCATE payments, tariffs"))
-    async with session_factory() as session:
-        await seed_tariffs(session)
+    await reset_db(engine, session_factory)
 
 
 @pytest.fixture

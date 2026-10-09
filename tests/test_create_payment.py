@@ -1,6 +1,5 @@
 import asyncio
 import re
-import uuid
 from typing import Any
 
 import pytest
@@ -9,6 +8,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Payment, PaymentStatus
+from tests.helpers import reload_payment
 
 PRICES = {"basic": 990000, "standard": 1990000, "premium": 2990000}
 RESPONSE_FIELDS = {
@@ -33,11 +33,6 @@ async def count_payments(session: AsyncSession) -> int:
     return await session.scalar(select(func.count()).select_from(Payment)) or 0
 
 
-async def get_payment(session: AsyncSession, payment_id: str) -> Payment:
-    session.expire_all()
-    return await session.get_one(Payment, uuid.UUID(payment_id))
-
-
 # --- создание и формат ответа ---
 
 
@@ -57,7 +52,7 @@ async def test_create_card_payment(client: AsyncClient, db_session: AsyncSession
     assert data["email"] == "user@example.com"
     assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", data["created_at"])
 
-    payment = await get_payment(db_session, data["id"])
+    payment = await reload_payment(db_session, data["id"])
     assert payment.status is PaymentStatus.PENDING
     assert (payment.amount, payment.discount) == (1990000, 0)
     assert payment.promo_code is None
@@ -90,7 +85,7 @@ async def test_amount_without_promo(
 
     assert data["discount"] == 0
     assert data["amount"] == PRICES[tariff_id]
-    payment = await get_payment(db_session, data["id"])
+    payment = await reload_payment(db_session, data["id"])
     assert payment.amount == PRICES[tariff_id]
 
 
@@ -106,7 +101,7 @@ async def test_amount_with_promo(
     price = PRICES[tariff_id]
     assert data["discount"] == price // 10
     assert data["amount"] == price - price // 10
-    payment = await get_payment(db_session, data["id"])
+    payment = await reload_payment(db_session, data["id"])
     assert (payment.amount, payment.discount) == (data["amount"], data["discount"])
     assert payment.promo_code == "KVITTO10"
 
@@ -118,7 +113,7 @@ async def test_empty_promo_is_absent(
     data = (await client.post("/payments", json=body(promo_code=promo))).json()
 
     assert (data["amount"], data["discount"]) == (1990000, 0)
-    assert (await get_payment(db_session, data["id"])).promo_code is None
+    assert (await reload_payment(db_session, data["id"])).promo_code is None
 
 
 async def test_unknown_promo(client: AsyncClient, db_session: AsyncSession) -> None:
@@ -167,7 +162,7 @@ async def test_installment_schedule(
     assert sum(schedule) == data["amount"]
     assert schedule == sorted(schedule, reverse=True)  # лишние копейки — в начале
     assert schedule[0] - schedule[-1] <= 1
-    payment = await get_payment(db_session, data["id"])
+    payment = await reload_payment(db_session, data["id"])
     assert payment.schedule == schedule
 
 
@@ -237,7 +232,7 @@ async def test_same_idempotency_key_returns_same_payment(
     assert second.status_code == 200
     assert second.json() == first.json()
     assert await count_payments(db_session) == 1
-    payment = await get_payment(db_session, first.json()["id"])
+    payment = await reload_payment(db_session, first.json()["id"])
     assert payment.idempotency_key == "key-1"
 
 
@@ -261,7 +256,7 @@ async def test_without_key_each_request_creates_payment(
 
     assert (first.status_code, second.status_code) == (201, 201)
     assert await count_payments(db_session) == 2
-    assert (await get_payment(db_session, first.json()["id"])).idempotency_key is None
+    assert (await reload_payment(db_session, first.json()["id"])).idempotency_key is None
 
 
 async def test_idempotency_key_max_length(client: AsyncClient, db_session: AsyncSession) -> None:

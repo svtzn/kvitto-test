@@ -1,7 +1,7 @@
 import pytest
 
 from app.models import InstallmentMonths
-from app.services.pricing import build_schedule, calc_discount
+from app.services.pricing import PriceBreakdown, build_schedule, calc_discount, calc_price
 
 TARIFF_PRICES = [990000, 1990000, 2990000]
 
@@ -58,3 +58,26 @@ def test_schedule_extra_kopecks_go_first(amount: int, months: int, expected: lis
 def test_schedule_rejects_non_positive_months(months: int) -> None:
     with pytest.raises(ValueError):
         build_schedule(100, months)
+
+
+def test_calc_price_without_installment() -> None:
+    price = calc_price(1990000, 10, months=None)
+
+    assert price == PriceBreakdown(discount=199000, amount=1791000, schedule=None)
+
+
+def test_calc_price_with_installment() -> None:
+    price = calc_price(1990000, 0, months=3)
+
+    assert price == PriceBreakdown(discount=0, amount=1990000, schedule=[663334, 663333, 663333])
+
+
+@pytest.mark.parametrize("months", list(InstallmentMonths))
+@pytest.mark.parametrize("percent", [0, 10])
+@pytest.mark.parametrize("tariff_price", TARIFF_PRICES)
+def test_calc_price_schedule_matches_amount(tariff_price: int, percent: int, months: int) -> None:
+    price = calc_price(tariff_price, percent, months)
+
+    assert price.amount == tariff_price - price.discount
+    assert price.schedule is not None
+    assert sum(price.schedule) == price.amount

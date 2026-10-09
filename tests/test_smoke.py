@@ -1,8 +1,9 @@
 from httpx import AsyncClient
 from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from app.models import Payment, PaymentMethod, PaymentStatus, Tariff
+from tests.helpers import add_payment, reset_db
 
 
 async def test_app_responds(client: AsyncClient) -> None:
@@ -33,10 +34,16 @@ async def test_payment_roundtrip(db_session: AsyncSession) -> None:
     assert saved.created_at.tzinfo is not None
 
 
-# идёт после test_payment_roundtrip: проверяет, что clean_db очищает данные между тестами
-async def test_db_is_seeded_and_clean(db_session: AsyncSession) -> None:
+async def test_reset_db_clears_payments_and_seeds_tariffs(
+    db_session: AsyncSession,
+    engine: AsyncEngine,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    await add_payment(db_session)
+
+    await reset_db(engine, session_factory)
+
     tariffs = (await db_session.scalars(select(Tariff.id).order_by(Tariff.price))).all()
     payments_count = await db_session.scalar(select(func.count()).select_from(Payment))
-
     assert tariffs == ["basic", "standard", "premium"]
     assert payments_count == 0

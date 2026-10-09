@@ -5,10 +5,10 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Payment, PaymentMethod, PaymentStatus, Tariff
-from app.promo import get_discount_percent
+from app.models import Payment, PaymentStatus, Tariff
+from app.promo import get_discount_percent, normalize_promo_code
 from app.schemas.payment import PaymentCreate
-from app.services.pricing import build_schedule, calc_discount
+from app.services.pricing import calc_price
 from app.services.transitions import can_transition
 
 
@@ -18,8 +18,20 @@ class UnknownTariff(Exception):
         self.tariff_id = tariff_id
 
 
-async def get_by_idempotency_key(session: AsyncSession, key: str) -> Payment | None:
-    return await session.scalar(select(Payment).where(Payment.idempotency_key == key))
+class PaymentNotFound(Exception):
+    def __init__(self, payment_id: uuid.UUID) -> None:
+        super().__init__(f"Payment not found: {payment_id}")
+        self.payment_id = payment_id
+
+
+class InvalidTransition(Exception):
+    def __init__(self, current: PaymentStatus, new: PaymentStatus) -> None:
+        super().__init__(f"Invalid transition: {current} -> {new}")
+        self.current = current
+        self.new = new
+
+
+# --- создание ---
 
 
 async def create_payment(
@@ -35,48 +47,60 @@ async def create_payment(
         if existing is not None:
             return existing, False
 
+    payment = await _build_payment(session, data, idempotency_key)
+    return await _save_new_payment(session, payment)
+
+
+async def get_by_idempotency_key(session: AsyncSession, key: str) -> Payment | None:
+    return await session.scalar(select(Payment).where(Payment.idempotency_key == key))
+
+
+async def _build_payment(
+    session: AsyncSession, data: PaymentCreate, idempotency_key: str | None
+) -> Payment:
     tariff = await session.get(Tariff, data.tariff_id)
     if tariff is None:
         raise UnknownTariff(data.tariff_id)
 
     promo_code = None
-    discount = 0
+    discount_percent = 0
     if data.promo_code is not None:
-        percent = get_discount_percent(data.promo_code)
-        promo_code = data.promo_code.strip().upper()
-        discount = calc_discount(tariff.price, percent)
-    amount = tariff.price - discount
+        discount_percent = get_discount_percent(data.promo_code)
+        promo_code = normalize_promo_code(data.promo_code)
 
-    months = None
-    schedule = None
-    if data.method is PaymentMethod.INSTALLMENT:
-        assert data.installment_months is not None  # гарантирует PaymentCreate
-        months = int(data.installment_months)
-        schedule = build_schedule(amount, months)
+    months = int(data.installment_months) if data.installment_months is not None else None
+    price = calc_price(tariff.price, discount_percent, months)
 
-    payment = Payment(
+    return Payment(
         tariff_id=tariff.id,
-        amount=amount,
-        discount=discount,
+        amount=price.amount,
+        discount=price.discount,
         method=data.method,
         installment_months=months,
-        schedule=schedule,
+        schedule=price.schedule,
         email=data.email,
         promo_code=promo_code,
         idempotency_key=idempotency_key,
     )
+
+
+async def _save_new_payment(session: AsyncSession, payment: Payment) -> tuple[Payment, bool]:
+    key = payment.idempotency_key
     session.add(payment)
     try:
         await session.commit()
     except IntegrityError:
         # гонка: параллельный запрос с тем же ключом успел закоммитить раньше
         await session.rollback()
-        if idempotency_key is not None:
-            existing = await get_by_idempotency_key(session, idempotency_key)
+        if key is not None:
+            existing = await get_by_idempotency_key(session, key)
             if existing is not None:
                 return existing, False
         raise
     return payment, True
+
+
+# --- чтение ---
 
 
 async def get_payment(session: AsyncSession, payment_id: uuid.UUID) -> Payment | None:
@@ -94,22 +118,12 @@ async def list_payments(
     return (await session.scalars(stmt)).all()
 
 
-class PaymentNotFound(Exception):
-    def __init__(self, payment_id: uuid.UUID) -> None:
-        super().__init__(f"Payment not found: {payment_id}")
-        self.payment_id = payment_id
-
-
-class InvalidTransition(Exception):
-    def __init__(self, current: PaymentStatus, new: PaymentStatus) -> None:
-        super().__init__(f"Invalid transition: {current} -> {new}")
-        self.current = current
-        self.new = new
+# --- смена статуса ---
 
 
 async def change_status(
     session: AsyncSession, payment_id: uuid.UUID, new_status: PaymentStatus
-) -> Payment:
+) -> None:
     """Атомарно меняет статус платежа.
 
     Строка блокируется через SELECT … FOR UPDATE до конца транзакции, поэтому
@@ -128,4 +142,3 @@ async def change_status(
         raise InvalidTransition(current, new_status)
     payment.status = new_status
     await session.commit()
-    return payment

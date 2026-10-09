@@ -3,22 +3,18 @@ from collections.abc import Sequence
 from typing import Annotated
 
 from fastapi import APIRouter, Header, HTTPException, Query, Response, status
-from pydantic import BeforeValidator
+from pydantic import StringConstraints
 
 from app.api.deps import SessionDep
 from app.models import Payment, PaymentStatus
 from app.promo import UnknownPromoCode
+from app.schemas.common import BlankToNone
 from app.schemas.payment import PaymentCreate, PaymentRead
 from app.services.payments import UnknownTariff, create_payment, get_payment, list_payments
 
 router = APIRouter()
 
-
-def _blank_to_none(value: object) -> object:
-    """Пустой или пробельный query-параметр считается отсутствующим."""
-    if isinstance(value, str) and not value.strip():
-        return None
-    return value
+IdempotencyKey = Annotated[str, StringConstraints(max_length=255)]
 
 
 @router.post(
@@ -31,10 +27,8 @@ async def post_payment(
     data: PaymentCreate,
     session: SessionDep,
     response: Response,
-    idempotency_key: Annotated[str | None, Header(max_length=255)] = None,
+    idempotency_key: Annotated[IdempotencyKey | None, BlankToNone, Header()] = None,
 ) -> Payment:
-    if idempotency_key is not None and not idempotency_key.strip():
-        idempotency_key = None
     try:
         payment, created = await create_payment(session, data, idempotency_key)
     except UnknownTariff:
@@ -49,10 +43,8 @@ async def post_payment(
 @router.get("", response_model=list[PaymentRead])
 async def get_payments(
     session: SessionDep,
-    email: Annotated[str | None, BeforeValidator(_blank_to_none), Query()] = None,
-    payment_status: Annotated[
-        PaymentStatus | None, BeforeValidator(_blank_to_none), Query(alias="status")
-    ] = None,
+    email: Annotated[str | None, BlankToNone, Query()] = None,
+    payment_status: Annotated[PaymentStatus | None, BlankToNone, Query(alias="status")] = None,
 ) -> Sequence[Payment]:
     return await list_payments(session, email=email, status=payment_status)
 

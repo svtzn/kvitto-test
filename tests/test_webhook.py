@@ -4,27 +4,29 @@ import uuid
 from typing import Any
 
 import pytest
-from httpx import AsyncClient
+from httpx import AsyncClient, Response
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
 from app.models import Payment, PaymentStatus
-from tests.factories import add_payment
+from tests.helpers import add_payment, reload_payment
 
-S = PaymentStatus
-ALLOWED = [(S.PENDING, S.SUCCEEDED), (S.PENDING, S.FAILED), (S.SUCCEEDED, S.REFUNDED)]
-FORBIDDEN = [pair for pair in itertools.product(S, repeat=2) if pair not in ALLOWED]
+ALLOWED = [
+    (PaymentStatus.PENDING, PaymentStatus.SUCCEEDED),
+    (PaymentStatus.PENDING, PaymentStatus.FAILED),
+    (PaymentStatus.SUCCEEDED, PaymentStatus.REFUNDED),
+]
+FORBIDDEN = [pair for pair in itertools.product(PaymentStatus, repeat=2) if pair not in ALLOWED]
 
 
-async def send(client: AsyncClient, payment_id: uuid.UUID | str, status: str) -> Any:
+async def send(client: AsyncClient, payment_id: uuid.UUID | str, status: str) -> Response:
     return await client.post(
         "/webhooks/bank", json={"payment_id": str(payment_id), "status": status}
     )
 
 
 async def db_status(session: AsyncSession, payment_id: uuid.UUID) -> PaymentStatus:
-    session.expire_all()
-    return (await session.get_one(Payment, payment_id)).status
+    return (await reload_payment(session, payment_id)).status
 
 
 async def api_status(client: AsyncClient, payment_id: uuid.UUID) -> str:
@@ -59,7 +61,7 @@ async def test_full_lifecycle(client: AsyncClient, db_session: AsyncSession) -> 
 
     assert (await send(client, payment_id, "succeeded")).status_code == 200
     assert (await send(client, payment_id, "refunded")).status_code == 200
-    assert await db_status(db_session, payment_id) is S.REFUNDED
+    assert await db_status(db_session, payment_id) is PaymentStatus.REFUNDED
 
 
 # --- запрещённые переходы (обязательный тест 4) ---
@@ -126,7 +128,7 @@ async def test_invalid_status_does_not_change_payment(
     response = await send(client, payment.id, "paid")
 
     assert response.status_code == 422
-    assert await db_status(db_session, payment.id) is S.PENDING
+    assert await db_status(db_session, payment.id) is PaymentStatus.PENDING
 
 
 # --- конкурентность: SELECT … FOR UPDATE ---
@@ -145,7 +147,7 @@ async def count_lock_waiters(engine: AsyncEngine) -> int:
 
 async def send_while_row_locked(
     client: AsyncClient, engine: AsyncEngine, payment_id: uuid.UUID, statuses: list[str]
-) -> list[Any]:
+) -> list[Response]:
     """Держит строку платежа заблокированной, пока все вебхуки не встанут в ожидание.
 
     Так все запросы гарантированно конкурируют за одну строку, а не выполняются по очереди.
@@ -170,7 +172,7 @@ async def test_concurrent_same_webhook_applies_once(
     responses = await send_while_row_locked(client, engine, payment.id, ["succeeded"] * 10)
 
     assert sorted(r.status_code for r in responses) == [200] + [409] * 9
-    assert await db_status(db_session, payment.id) is S.SUCCEEDED
+    assert await db_status(db_session, payment.id) is PaymentStatus.SUCCEEDED
 
 
 async def test_concurrent_conflicting_webhooks_one_wins(

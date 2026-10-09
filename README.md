@@ -27,7 +27,7 @@ uv run uvicorn app.main:app --reload
 
 ### Тесты и проверки
 
-Тесты идут против настоящего PostgreSQL (`TEST_DATABASE_URL`), SQLite не используется. Схема тестовой базы пересоздаётся на каждую сессию pytest, таблицы очищаются перед каждым тестом. Юнит-тесты расчётов работают без БД.
+Тесты идут против настоящего PostgreSQL (`TEST_DATABASE_URL`, его читает только `tests/conftest.py`), SQLite не используется. Схема тестовой базы пересоздаётся на каждую сессию pytest, таблицы очищаются перед каждым тестом, которому нужна БД. Юнит-тесты расчётов работают без БД.
 
 ```bash
 docker compose up -d db
@@ -63,7 +63,7 @@ curl -X POST localhost:8000/webhooks/bank \
 ```
 app/
   main.py          FastAPI, lifespan: seed тарифов
-  config.py        настройки из окружения / .env
+  config.py        настройки приложения из окружения / .env (DATABASE_URL)
   db.py            async engine и сессии
   promo.py         справочник промокодов
   seed.py          идемпотентный upsert тарифов
