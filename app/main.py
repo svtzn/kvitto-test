@@ -4,12 +4,14 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from app.api import api_router
-from app.db import engine
+from app.db import SessionFactory, engine
+from app.seed import seed_tariffs
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
-    # TODO: seed тарифов (идемпотентный upsert)
+    async with SessionFactory() as session:
+        await seed_tariffs(session)
     yield
     await engine.dispose()
 
